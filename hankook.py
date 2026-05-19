@@ -31,7 +31,7 @@ def name_to_code(input_text, df):
     else:
         return None
 
-# --- [3. 한국투자증권 API 통신 함수] ---
+# --- [3. 한국투자증권 API 통신 함수 (🚨 에러 출력 로직 복구)] ---
 def get_hantu_token(app_key, app_secret, is_vts=True):
     base_url = "https://openapivts.koreainvestment.com:29443" if is_vts else "https://openapi.koreainvestment.com:9443"
     url = f"{base_url}/oauth2/tokenP"
@@ -41,7 +41,10 @@ def get_hantu_token(app_key, app_secret, is_vts=True):
     response = requests.post(url, headers=headers, json=payload)
     if response.status_code == 200:
         return response.json().get("access_token")
-    return None
+    else:
+        # 실패 사유를 화면에 강제로 띄웁니다!
+        st.error(f"❌ 토큰 발급 실패 (키 오류 또는 실전/모의투자 설정 확인): {response.text}")
+        return None
 
 def get_current_price(app_key, app_secret, token, stock_code, is_vts=True):
     base_url = "https://openapivts.koreainvestment.com:29443" if is_vts else "https://openapi.koreainvestment.com:9443"
@@ -72,6 +75,8 @@ with st.sidebar:
     st.header("🛡️ 보안 인증 정보")
     HANTU_APP_KEY = st.text_input("한투 APP KEY", type="password", value=st.secrets.get("HANTU_APP_KEY", ""))
     HANTU_APP_SECRET = st.text_input("한투 APP SECRET", type="password", value=st.secrets.get("HANTU_APP_SECRET", ""))
+    
+    # 🚨 여기가 가장 중요합니다. 본인이 발급받은 키가 실계좌용인지 모의투자용인지 꼭 확인하세요!
     is_simulation = st.checkbox("모의투자 계좌인가요?", value=True)
     
     st.markdown("---")
@@ -79,7 +84,7 @@ with st.sidebar:
     start_time = st.time_input("시작 시간", value=datetime.time(8, 0))
     end_time = st.time_input("종료 시간", value=datetime.time(15, 20))
 
-# 🌟 다중 종목 입력 UI
+# 다중 종목 입력 UI
 st.subheader("📋 감시 종목 리스트")
 st.write("표 아래의 **[➕ 행 추가]** 버튼을 눌러 감시할 종목을 여러 개 등록하세요. (입력 후 반드시 Enter 키를 누르세요)")
 
@@ -89,7 +94,6 @@ if "watch_df" not in st.session_state:
         {"종목명_또는_코드": "LIG넥스원", "목표가격": 250000, "조건": "이상 (>=)"}
     ])
 
-# 🌟 [버그 해결] 수정한 표 데이터를 세션에 바로 덮어써서 날아가지 않게 고정!
 st.session_state.watch_df = st.data_editor(
     st.session_state.watch_df,
     num_rows="dynamic",
@@ -104,15 +108,16 @@ btn_col1, btn_col2 = st.columns(2)
 with btn_col1:
     if st.button("🚀 실시간 감시 시작", use_container_width=True):
         st.session_state.monitoring = True
-        st.session_state.alerted_set = set() # 시작할 때마다 알림 기록 초기화
+        st.session_state.alerted_set = set() 
 with btn_col2:
     if st.button("🛑 감시 중지", use_container_width=True):
         st.session_state.monitoring = False
 
-# --- [5. 다중 종목 & 시간 제한 Core Loop] ---
+# --- [5. 다중 종목 & 시간 제한 Core Loop (🚨 에러 분기 추가)] ---
 if st.session_state.monitoring:
     token = get_hantu_token(HANTU_APP_KEY, HANTU_APP_SECRET, is_simulation)
     
+    # 🌟 토큰 발급 성공 시에만 루프 진입
     if token:
         status_box = st.empty()
         
@@ -120,17 +125,14 @@ if st.session_state.monitoring:
             now_kst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
             current_time_only = now_kst.time() 
             
-            # 🌟 [업그레이드] 대기 중일 때 내가 등록한 종목들을 화면에 보여줍니다.
             if not (start_time <= current_time_only <= end_time):
                 waiting_stocks = ", ".join([str(row["종목명_또는_코드"]) for _, row in st.session_state.watch_df.iterrows()])
                 status_box.warning(f"⏳ 현재 시간({now_kst.strftime('%H:%M')})은 설정된 감시 시간이 아닙니다.\n\n💤 대기 중인 종목: {waiting_stocks}")
                 time.sleep(10) 
                 continue
             
-            # 장중(설정 시간 내)일 경우 다중 종목 순회 검사
             display_texts = []
             
-            # 🌟 [버그 해결] 세션에 안전하게 저장된 표 데이터를 기준으로 반복 검사
             for index, row in st.session_state.watch_df.iterrows():
                 stock_input = str(row["종목명_또는_코드"])
                 target_price = int(row["목표가격"])
@@ -141,7 +143,6 @@ if st.session_state.monitoring:
                     display_texts.append(f"❌ {stock_input}: 종목 검색 실패")
                     continue
                 
-                # API 호출 간격 조절 (초당 1건 이상 요청 시 차단 방지)
                 time.sleep(0.5) 
                 current_p, stock_name = get_current_price(HANTU_APP_KEY, HANTU_APP_SECRET, token, actual_code, is_simulation)
                 
@@ -161,5 +162,9 @@ if st.session_state.monitoring:
                     display_texts.append(f"⚠️ {stock_input}: 가격 조회 실패 (장외 시간이거나 키 오류)")
             
             status_box.info(f"🔄 실시간 감시 중 ({now_kst.strftime('%H:%M:%S')})\n\n" + "\n".join(display_texts))
+            time.sleep(5) 
             
-            time.sleep(5)
+    # 🌟 토큰 발급 실패 시 아예 감시 상태를 꺼버리고 경고창 띄우기
+    else:
+        st.error("🚨 API 키 인증에 실패하여 시스템을 시작할 수 없습니다. 금고 파일(secrets)의 정보나 '모의투자' 체크박스를 확인해 주세요.")
+        st.session_state.monitoring = False
