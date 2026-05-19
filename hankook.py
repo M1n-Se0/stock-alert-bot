@@ -123,8 +123,11 @@ if st.session_state.monitoring:
             current_time_only = now_kst.time() # 날짜 빼고 순수 시간만 추출
             
             # 사용자가 설정한 시작~종료 시간 사이인지 검사
+            # 사용자가 설정한 시작~종료 시간 사이인지 검사
             if not (start_time <= current_time_only <= end_time):
-                status_box.warning(f"⏳ 현재 시간({now_kst.strftime('%H:%M')})은 설정된 감시 시간({start_time.strftime('%H:%M')} ~ {end_time.strftime('%H:%M')})이 아닙니다. 대기 중입니다...")
+                # 🌟 [업그레이드] 대기 중일 때도 내가 추가한 종목이 무엇인지 화면에 띄워줍니다!
+                waiting_stocks = ", ".join([str(row["종목명_또는_코드"]) for _, row in edited_df.iterrows()])
+                status_box.warning(f"⏳ 현재 시간({now_kst.strftime('%H:%M')})은 설정된 감시 시간이 아닙니다.\n\n💤 대기 중인 종목: {waiting_stocks}")
                 time.sleep(10) # 10초 대기 후 다시 시간 확인
                 continue
             
