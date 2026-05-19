@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import time
+import datetime
 import pandas as pd
 import FinanceDataReader as fdr
 from telegram_bot import send_telegram_alert
@@ -8,24 +9,23 @@ from telegram_bot import send_telegram_alert
 # --- [1. 기본 웹페이지 설정] ---
 st.set_page_config(page_title="실시간 주식 알림 봇", layout="wide")
 st.title("🤖 한국투자증권 X 텔레그램 실시간 알림 봇")
-st.write("목표 가격을 설정해두면 실시간으로 감시하여 텔레그램으로 알림을 보냅니다.")
+st.write("여러 종목의 목표가를 설정해두면 08:00 ~ 15:20 동안 실시간 감시합니다.")
 
-# --- [2. 종목명 <-> 종목코드 번역 기능 (서버 차단 방어 로직)] ---
+# --- [2. 종목명 <-> 종목코드 번역 기능] ---
 @st.cache_data
 def load_stock_dict():
     try:
         df = fdr.StockListing('KRX') 
         return df[['Code', 'Name']]
     except Exception as e:
-        # 서버 차단 시 빈 데이터프레임 반환
         return pd.DataFrame(columns=['Code', 'Name'])
 
 def name_to_code(input_text, df):
-    if input_text.isdigit():
-        return input_text
+    if str(input_text).isdigit():
+        return str(input_text).zfill(6)
     if df.empty:
         return None 
-    result = df[df['Name'] == input_text]
+    result = df[df['Name'] == str(input_text)]
     if not result.empty:
         return result.iloc[0]['Code']
     else:
@@ -66,7 +66,6 @@ def get_current_price(app_key, app_secret, token, stock_code, is_vts=True):
 if "monitoring" not in st.session_state:
     st.session_state.monitoring = False
 
-# 백그라운드에서 종목 사전 로드
 stock_dict_df = load_stock_dict()
 
 with st.sidebar:
@@ -74,58 +73,89 @@ with st.sidebar:
     HANTU_APP_KEY = st.text_input("한투 APP KEY", type="password", value=st.secrets.get("HANTU_APP_KEY", ""))
     HANTU_APP_SECRET = st.text_input("한투 APP SECRET", type="password", value=st.secrets.get("HANTU_APP_SECRET", ""))
     is_simulation = st.checkbox("모의투자 계좌인가요?", value=True)
-    st.markdown("---")
-    st.info("💬 텔레그램 연결 정보는 내장된 금고 파일에서 안전하게 로드되었습니다.")
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    stock_input = st.text_input("📈 종목명 (또는 6자리 코드)", value="삼성전자", help="'한화에어로스페이스' 처럼 이름을 정확히 입력하세요.")
-with col2:
-    target_price = st.number_input("🎯 목표 가격 (원)", value=70000, step=100)
-with col3:
-    condition = st.selectbox("🔔 알림 조건", ["이상 (>=)", "이하 (<=)"])
+# 🌟 다중 종목 입력 UI (데이터프레임 에디터)
+st.subheader("📋 감시 종목 리스트")
+st.write("표 아래의 **[➕ 행 추가]** 버튼을 눌러 감시할 종목을 여러 개 등록하세요.")
+
+if "watch_df" not in st.session_state:
+    st.session_state.watch_df = pd.DataFrame([
+        {"종목명_또는_코드": "삼성전자", "목표가격": 80000, "조건": "이상 (>=)"},
+        {"종목명_또는_코드": "LIG넥스원", "목표가격": 250000, "조건": "이상 (>=)"}
+    ])
+
+edited_df = st.data_editor(
+    st.session_state.watch_df,
+    num_rows="dynamic",
+    use_container_width=True,
+    column_config={
+        "조건": st.column_config.SelectboxColumn("조건", options=["이상 (>=)", "이하 (<=)"], required=True),
+        "목표가격": st.column_config.NumberColumn("목표가격", step=100, required=True)
+    }
+)
 
 btn_col1, btn_col2 = st.columns(2)
 with btn_col1:
     if st.button("🚀 실시간 감시 시작", use_container_width=True):
         st.session_state.monitoring = True
+        st.session_state.alerted_set = set() # 시작할 때마다 알림 기록 초기화
 with btn_col2:
     if st.button("🛑 감시 중지", use_container_width=True):
         st.session_state.monitoring = False
 
-# --- [5. 실시간 감시 Core Loop] ---
+# --- [5. 다중 종목 & 시간 제한 Core Loop] ---
 if st.session_state.monitoring:
-    actual_stock_code = name_to_code(stock_input, stock_dict_df)
+    token = get_hantu_token(HANTU_APP_KEY, HANTU_APP_SECRET, is_simulation)
     
-    if not actual_stock_code:
-        if stock_dict_df.empty:
-            st.error("⚠️ 클라우드 서버(해외) 문제로 종목명 검색 사전을 불러오지 못했습니다. '005930' 처럼 6자리 코드를 직접 입력해 주세요.")
-        else:
-            st.error(f"❌ '{stock_input}'(이)라는 종목을 찾을 수 없습니다. 이름을 정확히 확인해주세요.")
-        st.session_state.monitoring = False
-    else:
-        st.info(f"🔄 실시간 시세 감시가 작동 중입니다... (종목코드: {actual_stock_code})")
-        token = get_hantu_token(HANTU_APP_KEY, HANTU_APP_SECRET, is_simulation)
+    if token:
+        status_box = st.empty()
         
-        if token:
-            status_box = st.empty()
-            while st.session_state.monitoring:
-                current_p, stock_name = get_current_price(HANTU_APP_KEY, HANTU_APP_SECRET, token, actual_stock_code, is_simulation)
+        while st.session_state.monitoring:
+            # 🌟 1. 시간 확인 로직 (UTC 시간을 KST로 변환)
+            now_kst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
+            total_minutes = now_kst.hour * 60 + now_kst.minute
+            
+            # 08:00(480분) ~ 15:20(920분) 사이인지 확인
+            if not (480 <= total_minutes <= 920):
+                status_box.warning(f"⏳ 현재 시간({now_kst.strftime('%H:%M')})은 감시 시간(08:00~15:20)이 아닙니다. 대기 중입니다...")
+                time.sleep(10) # 10초 대기 후 다시 시간 확인
+                continue
+            
+            # 🌟 2. 장중일 경우 다중 종목 순회 검사
+            display_texts = []
+            
+            for index, row in edited_df.iterrows():
+                stock_input = str(row["종목명_또는_코드"])
+                target_price = int(row["목표가격"])
+                condition = row["조건"]
+                
+                actual_code = name_to_code(stock_input, stock_dict_df)
+                if not actual_code:
+                    display_texts.append(f"❌ {stock_input}: 종목 검색 실패")
+                    continue
+                
+                # API 호출 간격 조절 (초당 1건 이상 요청 시 차단 방지)
+                time.sleep(0.5) 
+                current_p, stock_name = get_current_price(HANTU_APP_KEY, HANTU_APP_SECRET, token, actual_code, is_simulation)
                 
                 if current_p:
-                    status_box.metric(label=f"🟢 감시 중: {stock_name} ({actual_stock_code})", value=f"{current_p:,} 원", delta=f"목표가까지 {current_p - target_price:,} 원")
+                    display_texts.append(f"🟢 {stock_name}({actual_code}): {current_p:,}원 (목표: {target_price:,}원)")
                     
                     is_triggered = False
                     if condition == "이상 (>=)" and current_p >= target_price: is_triggered = True
                     elif condition == "이하 (<=)" and current_p <= target_price: is_triggered = True
                     
-                    if is_triggered:
-                        msg = f"🔔 [목표가 도달 알림]\n종목: {stock_name}\n현재가: {current_p:,}원\n설정조건: {target_price:,}원 {condition}"
+                    # 목표가 도달 시 & 아직 알림을 안 보낸 종목일 경우에만 전송
+                    if is_triggered and actual_code not in st.session_state.alerted_set:
+                        msg = f"🚀 [돌파 알림]\n종목: {stock_name}\n현재가: {current_p:,}원\n설정조건: {target_price:,}원 {condition}"
                         send_telegram_alert(msg)
-                        st.balloons()
-                        st.success("🎉 목표가 도달! 텔레그램 알림을 전송하고 감시를 종료합니다.")
-                        st.session_state.monitoring = False
-                        break
+                        st.session_state.alerted_set.add(actual_code) # 알림 보냄 표시
+                        display_texts.append(f"   └ 🔔 알림 발송 완료!")
                 else:
-                    status_box.error("❌ 현재가를 가져오지 못했습니다. 장외 시간이거나 키 설정을 확인하세요.")
-                time.sleep(5)
+                    display_texts.append(f"⚠️ {stock_input}: 가격 조회 실패 (장외 시간이거나 키 오류)")
+            
+            # 화면에 현재 모든 종목의 상태 업데이트
+            status_box.info(f"🔄 실시간 감시 중 ({now_kst.strftime('%H:%M:%S')})\n\n" + "\n".join(display_texts))
+            
+            # 한 바퀴 다 돌면 5초 휴식 후 반복
+            time.sleep(5)
