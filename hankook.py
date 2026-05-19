@@ -31,7 +31,7 @@ def name_to_code(input_text, df):
     else:
         return None
 
-# --- [3. 한국투자증권 API 통신 함수 (🚨 에러 출력 로직 복구)] ---
+# --- [3. 한국투자증권 API 통신 함수] ---
 def get_hantu_token(app_key, app_secret, is_vts=True):
     base_url = "https://openapivts.koreainvestment.com:29443" if is_vts else "https://openapi.koreainvestment.com:9443"
     url = f"{base_url}/oauth2/tokenP"
@@ -42,8 +42,12 @@ def get_hantu_token(app_key, app_secret, is_vts=True):
     if response.status_code == 200:
         return response.json().get("access_token")
     else:
-        # 실패 사유를 화면에 강제로 띄웁니다!
-        st.error(f"❌ 토큰 발급 실패 (키 오류 또는 실전/모의투자 설정 확인): {response.text}")
+        # 🚨 [진단용] 한투 서버가 보내는 진짜 에러 메시지를 화면에 띄웁니다.
+        try:
+            error_detail = response.json().get('error_description', response.text)
+        except:
+            error_detail = response.text
+        st.error(f"❌ [한투 서버 거절 사유]: {error_detail}")
         return None
 
 def get_current_price(app_key, app_secret, token, stock_code, is_vts=True):
@@ -75,10 +79,16 @@ with st.sidebar:
     st.header("🛡️ 보안 인증 정보")
     HANTU_APP_KEY = st.text_input("한투 APP KEY", type="password", value=st.secrets.get("HANTU_APP_KEY", ""))
     HANTU_APP_SECRET = st.text_input("한투 APP SECRET", type="password", value=st.secrets.get("HANTU_APP_SECRET", ""))
-    
-    # 🚨 여기가 가장 중요합니다. 본인이 발급받은 키가 실계좌용인지 모의투자용인지 꼭 확인하세요!
     is_simulation = st.checkbox("모의투자 계좌인가요?", value=True)
     
+    # 🌟 [진단용] 클라우드 서버가 내 키를 제대로 읽었는지 검사합니다.
+    st.markdown("---")
+    st.header("🩺 서버 연결 상태 진단")
+    if not HANTU_APP_KEY or not HANTU_APP_SECRET:
+        st.error("🚨 삐빅! 클라우드에 API 키가 비어있습니다. Secrets 설정을 확인하세요!")
+    else:
+        st.success("✅ API 키 정상 로드됨")
+        
     st.markdown("---")
     st.header("⏱️ 감시 시간 설정")
     start_time = st.time_input("시작 시간", value=datetime.time(8, 0))
@@ -113,11 +123,10 @@ with btn_col2:
     if st.button("🛑 감시 중지", use_container_width=True):
         st.session_state.monitoring = False
 
-# --- [5. 다중 종목 & 시간 제한 Core Loop (🚨 에러 분기 추가)] ---
+# --- [5. 다중 종목 & 시간 제한 Core Loop] ---
 if st.session_state.monitoring:
     token = get_hantu_token(HANTU_APP_KEY, HANTU_APP_SECRET, is_simulation)
     
-    # 🌟 토큰 발급 성공 시에만 루프 진입
     if token:
         status_box = st.empty()
         
@@ -164,7 +173,5 @@ if st.session_state.monitoring:
             status_box.info(f"🔄 실시간 감시 중 ({now_kst.strftime('%H:%M:%S')})\n\n" + "\n".join(display_texts))
             time.sleep(5) 
             
-    # 🌟 토큰 발급 실패 시 아예 감시 상태를 꺼버리고 경고창 띄우기
     else:
-        st.error("🚨 API 키 인증에 실패하여 시스템을 시작할 수 없습니다. 금고 파일(secrets)의 정보나 '모의투자' 체크박스를 확인해 주세요.")
         st.session_state.monitoring = False
