@@ -9,7 +9,7 @@ from telegram_bot import send_telegram_alert
 # --- [1. 기본 웹페이지 설정] ---
 st.set_page_config(page_title="실시간 주식 알림 봇", layout="wide")
 st.title("🤖 한국투자증권 X 텔레그램 실시간 알림 봇")
-st.write("여러 종목의 목표가를 설정해두면 08:00 ~ 15:20 동안 실시간 감시합니다.")
+st.write("여러 종목의 목표가를 설정해두면 지정한 시간 동안만 실시간으로 감시합니다.")
 
 # --- [2. 종목명 <-> 종목코드 번역 기능] ---
 @st.cache_data
@@ -73,8 +73,15 @@ with st.sidebar:
     HANTU_APP_KEY = st.text_input("한투 APP KEY", type="password", value=st.secrets.get("HANTU_APP_KEY", ""))
     HANTU_APP_SECRET = st.text_input("한투 APP SECRET", type="password", value=st.secrets.get("HANTU_APP_SECRET", ""))
     is_simulation = st.checkbox("모의투자 계좌인가요?", value=True)
+    
+    # 🌟 새롭게 추가된 '시간 설정' UI
+    st.markdown("---")
+    st.header("⏱️ 감시 시간 설정")
+    st.write("이 시간 사이에만 가격을 확인합니다.")
+    start_time = st.time_input("시작 시간", value=datetime.time(8, 0))
+    end_time = st.time_input("종료 시간", value=datetime.time(15, 20))
 
-# 🌟 다중 종목 입력 UI (데이터프레임 에디터)
+# 다중 종목 입력 UI (데이터프레임 에디터)
 st.subheader("📋 감시 종목 리스트")
 st.write("표 아래의 **[➕ 행 추가]** 버튼을 눌러 감시할 종목을 여러 개 등록하세요.")
 
@@ -111,17 +118,17 @@ if st.session_state.monitoring:
         status_box = st.empty()
         
         while st.session_state.monitoring:
-            # 🌟 1. 시간 확인 로직 (UTC 시간을 KST로 변환)
+            # 🌟 1. 시간 확인 로직 (UTC 시간을 KST로 변환 후, 사용자가 설정한 시간과 비교)
             now_kst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
-            total_minutes = now_kst.hour * 60 + now_kst.minute
+            current_time_only = now_kst.time() # 날짜 빼고 순수 시간만 추출
             
-            # 08:00(480분) ~ 15:20(920분) 사이인지 확인
-            if not (480 <= total_minutes <= 920):
-                status_box.warning(f"⏳ 현재 시간({now_kst.strftime('%H:%M')})은 감시 시간(08:00~15:20)이 아닙니다. 대기 중입니다...")
+            # 사용자가 설정한 시작~종료 시간 사이인지 검사
+            if not (start_time <= current_time_only <= end_time):
+                status_box.warning(f"⏳ 현재 시간({now_kst.strftime('%H:%M')})은 설정된 감시 시간({start_time.strftime('%H:%M')} ~ {end_time.strftime('%H:%M')})이 아닙니다. 대기 중입니다...")
                 time.sleep(10) # 10초 대기 후 다시 시간 확인
                 continue
             
-            # 🌟 2. 장중일 경우 다중 종목 순회 검사
+            # 🌟 2. 장중(설정 시간 내)일 경우 다중 종목 순회 검사
             display_texts = []
             
             for index, row in edited_df.iterrows():
@@ -149,7 +156,7 @@ if st.session_state.monitoring:
                     if is_triggered and actual_code not in st.session_state.alerted_set:
                         msg = f"🚀 [돌파 알림]\n종목: {stock_name}\n현재가: {current_p:,}원\n설정조건: {target_price:,}원 {condition}"
                         send_telegram_alert(msg)
-                        st.session_state.alerted_set.add(actual_code) # 알림 보냄 표시
+                        st.session_state.alerted_set.add(actual_code) 
                         display_texts.append(f"   └ 🔔 알림 발송 완료!")
                 else:
                     display_texts.append(f"⚠️ {stock_input}: 가격 조회 실패 (장외 시간이거나 키 오류)")
