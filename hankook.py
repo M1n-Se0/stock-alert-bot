@@ -74,16 +74,14 @@ with st.sidebar:
     HANTU_APP_SECRET = st.text_input("한투 APP SECRET", type="password", value=st.secrets.get("HANTU_APP_SECRET", ""))
     is_simulation = st.checkbox("모의투자 계좌인가요?", value=True)
     
-    # 🌟 새롭게 추가된 '시간 설정' UI
     st.markdown("---")
     st.header("⏱️ 감시 시간 설정")
-    st.write("이 시간 사이에만 가격을 확인합니다.")
     start_time = st.time_input("시작 시간", value=datetime.time(8, 0))
     end_time = st.time_input("종료 시간", value=datetime.time(15, 20))
 
-# 다중 종목 입력 UI (데이터프레임 에디터)
+# 🌟 다중 종목 입력 UI
 st.subheader("📋 감시 종목 리스트")
-st.write("표 아래의 **[➕ 행 추가]** 버튼을 눌러 감시할 종목을 여러 개 등록하세요.")
+st.write("표 아래의 **[➕ 행 추가]** 버튼을 눌러 감시할 종목을 여러 개 등록하세요. (입력 후 반드시 Enter 키를 누르세요)")
 
 if "watch_df" not in st.session_state:
     st.session_state.watch_df = pd.DataFrame([
@@ -91,7 +89,8 @@ if "watch_df" not in st.session_state:
         {"종목명_또는_코드": "LIG넥스원", "목표가격": 250000, "조건": "이상 (>=)"}
     ])
 
-edited_df = st.data_editor(
+# 🌟 [버그 해결] 수정한 표 데이터를 세션에 바로 덮어써서 날아가지 않게 고정!
+st.session_state.watch_df = st.data_editor(
     st.session_state.watch_df,
     num_rows="dynamic",
     use_container_width=True,
@@ -118,23 +117,21 @@ if st.session_state.monitoring:
         status_box = st.empty()
         
         while st.session_state.monitoring:
-            # 🌟 1. 시간 확인 로직 (UTC 시간을 KST로 변환 후, 사용자가 설정한 시간과 비교)
             now_kst = datetime.datetime.utcnow() + datetime.timedelta(hours=9)
-            current_time_only = now_kst.time() # 날짜 빼고 순수 시간만 추출
+            current_time_only = now_kst.time() 
             
-            # 사용자가 설정한 시작~종료 시간 사이인지 검사
-            # 사용자가 설정한 시작~종료 시간 사이인지 검사
+            # 🌟 [업그레이드] 대기 중일 때 내가 등록한 종목들을 화면에 보여줍니다.
             if not (start_time <= current_time_only <= end_time):
-                # 🌟 [업그레이드] 대기 중일 때도 내가 추가한 종목이 무엇인지 화면에 띄워줍니다!
-                waiting_stocks = ", ".join([str(row["종목명_또는_코드"]) for _, row in edited_df.iterrows()])
+                waiting_stocks = ", ".join([str(row["종목명_또는_코드"]) for _, row in st.session_state.watch_df.iterrows()])
                 status_box.warning(f"⏳ 현재 시간({now_kst.strftime('%H:%M')})은 설정된 감시 시간이 아닙니다.\n\n💤 대기 중인 종목: {waiting_stocks}")
-                time.sleep(10) # 10초 대기 후 다시 시간 확인
+                time.sleep(10) 
                 continue
             
-            # 🌟 2. 장중(설정 시간 내)일 경우 다중 종목 순회 검사
+            # 장중(설정 시간 내)일 경우 다중 종목 순회 검사
             display_texts = []
             
-            for index, row in edited_df.iterrows():
+            # 🌟 [버그 해결] 세션에 안전하게 저장된 표 데이터를 기준으로 반복 검사
+            for index, row in st.session_state.watch_df.iterrows():
                 stock_input = str(row["종목명_또는_코드"])
                 target_price = int(row["목표가격"])
                 condition = row["조건"]
@@ -155,7 +152,6 @@ if st.session_state.monitoring:
                     if condition == "이상 (>=)" and current_p >= target_price: is_triggered = True
                     elif condition == "이하 (<=)" and current_p <= target_price: is_triggered = True
                     
-                    # 목표가 도달 시 & 아직 알림을 안 보낸 종목일 경우에만 전송
                     if is_triggered and actual_code not in st.session_state.alerted_set:
                         msg = f"🚀 [돌파 알림]\n종목: {stock_name}\n현재가: {current_p:,}원\n설정조건: {target_price:,}원 {condition}"
                         send_telegram_alert(msg)
@@ -164,8 +160,6 @@ if st.session_state.monitoring:
                 else:
                     display_texts.append(f"⚠️ {stock_input}: 가격 조회 실패 (장외 시간이거나 키 오류)")
             
-            # 화면에 현재 모든 종목의 상태 업데이트
             status_box.info(f"🔄 실시간 감시 중 ({now_kst.strftime('%H:%M:%S')})\n\n" + "\n".join(display_texts))
             
-            # 한 바퀴 다 돌면 5초 휴식 후 반복
             time.sleep(5)
